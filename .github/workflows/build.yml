@@ -1,0 +1,69 @@
+name: build
+
+# The i258 cluster nodes are linux/amd64 and this repo is edited from an arm64
+# Mac, so the image is built here rather than locally — a native `docker build`
+# on the Mac produces an arm64 image and the Buzz Kubernetes provider rejects it
+# with "has no variant for the architecture of the nodes it was scheduled on".
+#
+# GITHUB_TOKEN also covers the GHCR push, so no personal access token is needed.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - .github/workflows/build.yml
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The Buzz Kubernetes provider refuses tags outright: "a tag is a mutable
+      # pointer, and this object runs with the agent's private key." The digest
+      # below is the only thing you can paste into the Desktop "Agent image"
+      # field, so surface it prominently rather than making someone go dig.
+      - name: Report the digest to paste into Buzz Desktop
+        run: |
+          PINNED="${IMAGE}@${{ steps.build.outputs.digest }}"
+          echo "::notice title=Agent image::${PINNED}"
+          {
+            echo "## Agent image"
+            echo
+            echo "Paste this into Buzz Desktop → Edit agent → Advanced → Agent image:"
+            echo
+            echo '```'
+            echo "${PINNED}"
+            echo '```'
+            echo
+            echo "Tags are refused by the provider — the digest is not optional."
+          } >> "$GITHUB_STEP_SUMMARY"
